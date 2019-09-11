@@ -16,7 +16,7 @@ jobs:
             echo 'export PATH="$GOPATH/bin:$PATH"' >> $BASH_ENV
             echo 'export REPONAME=litmuschaos' >> $BASH_ENV
             echo 'export IMGNAME=chaos-operator' >> $BASH_ENV
-            echo 'export IMGTAG=ci' >> $BASH_ENV
+            echo 'export IMGTAG=0.6' >> $BASH_ENV
       - run: make deps
       - run: make gotasks
       - setup_remote_docker:
