@@ -3,3 +3,7 @@ languages:
 - go
 exclude:
 - /vendor/.*
+- /pkg/client/.*
+test:
+    include:
+      - .*/test/.*\.go

@@ -11,6 +11,8 @@ import (
 type ChaosEngineSpec struct {
 	//Appinfo contains deployment details of AUT
 	Appinfo ApplicationParams `json:"appinfo"`
+	//ChaosServiceAccount is the SvcAcc specified for chaos runner pods
+	ChaosServiceAccount       string    `json:"chaosServiceAccount"`
 	//Consists of experiments executed by the engine
 	Experiments []ExperimentList `json:"experiments"`
 	//Execution schedule of batch of chaos experiments
@@ -106,6 +108,8 @@ type ExperimentStatuses struct {
 	LastUpdateTime metav1.Time `json:"lastUpdateTime"`
 }
 
+// +genclient
+// +resource:path=chaosengine
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ChaosEngine is the Schema for the chaosengines API

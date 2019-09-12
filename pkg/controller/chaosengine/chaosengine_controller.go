@@ -2,15 +2,20 @@ package chaosengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"strconv"
+
+	"github.com/go-logr/logr"
 	litmuschaosv1alpha1 "github.com/litmuschaos/chaos-operator/pkg/apis/litmuschaos/v1alpha1"
 	container "github.com/litmuschaos/chaos-operator/pkg/kubernetes/containers"
 	pod "github.com/litmuschaos/chaos-operator/pkg/kubernetes/pod"
 	service "github.com/litmuschaos/chaos-operator/pkg/kubernetes/service"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/errors"
+	v1 "k8s.io/api/core/v1"
+	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -24,8 +29,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-	// Temp test purposes
-	//"github.com/Sirupsen/logrus"
 )
 
 // To create logs for debugging or detailing, please follow this syntax.
@@ -105,21 +108,11 @@ type applicationInfo struct {
 	namespace      string
 	label          map[string]string
 	experimentList []litmuschaosv1alpha1.ExperimentList
+	serviceAccountName     string
 }
 
 var appLabelKey string
 var appLabelValue string
-
-func (appInfo *applicationInfo) initializeApplicationInfo(instance *litmuschaosv1alpha1.ChaosEngine) *applicationInfo {
-	appLabel := strings.Split(instance.Spec.Appinfo.Applabel, "=")
-	appLabelKey = appLabel[0]
-	appLabelValue = appLabel[1]
-	appInfo.label = make(map[string]string)
-	appInfo.label[appLabelKey] = appLabelValue
-	appInfo.namespace = instance.Spec.Appinfo.Appns
-	appInfo.experimentList = instance.Spec.Experiments
-	return appInfo
-}
 
 // Reconcile reads that state of the cluster for a ChaosEngine object and makes changes based on the state read
 // and what is in the ChaosEngine.Spec
@@ -134,7 +127,7 @@ func (r *ReconcileChaosEngine) Reconcile(request reconcile.Request) (reconcile.R
 	instance := &litmuschaosv1alpha1.ChaosEngine{}
 	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
-		if errors.IsNotFound(err) {
+		if k8serrors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
@@ -158,13 +151,6 @@ func (r *ReconcileChaosEngine) Reconcile(request reconcile.Request) (reconcile.R
 		appExperiments = append(appExperiments, exp.Name)
 	}
 
-	// Temp test purposes
-	/*
-	   logrus.Info("App Label derived from Chaosengine is ", aLabel)
-	   logrus.Info("App NS derived from Chaosengine is ", aNamespace)
-	   logrus.Info("Exp list derived from chaosengine is ", appExperiments)
-	*/
-
 	log.Info("App key derived from chaosengine is ", "appLabelKey", appLabelKey)
 	log.Info("App Label derived from Chaosengine is ", "appLabelValue", appLabelValue)
 	log.Info("App NS derived from Chaosengine is ", "appNamespace", appInfo.namespace)
@@ -173,21 +159,18 @@ func (r *ReconcileChaosEngine) Reconcile(request reconcile.Request) (reconcile.R
 	// Use client-Go to obtain a list of apps w/ specified labels
 	config, err := config.GetConfig()
 	if err != nil {
-		//logrus.Fatal(err.Error())
 		log.Error(err, "unable to get kube config")
 		return reconcile.Result{}, err
 	}
 
 	clientset, err := kubernetes.NewForConfig(config)
 	if err != nil {
-		//logrus.Fatal(err.Error())
 		log.Error(err, "unable to create clientset using kubeconfig")
 		return reconcile.Result{}, err
 	}
 
 	chaosAppList, err := clientset.AppsV1().Deployments(appInfo.namespace).List(metav1.ListOptions{LabelSelector: instance.Spec.Appinfo.Applabel, FieldSelector: ""})
 	if err != nil {
-		//logrus.Fatal("Failed to list deployments. Error is ", err)
 		log.Error(err, "unable to list apps matching labels")
 		return reconcile.Result{}, err
 	}
@@ -204,22 +187,33 @@ func (r *ReconcileChaosEngine) Reconcile(request reconcile.Request) (reconcile.R
 			appCaSts := metav1.HasAnnotation(app.ObjectMeta, chaosAnnotation)
 			//if appCaSts == true {
 			if appCaSts {
-				//logrus.Info ("chaos candidate app: ", appName, appUUID)
-				log.Info("chaos candidate : ", "appName", appName, "appUUID", appUUID)
-				chaosCandidates++
+				//Checks if the annotation is "true" / "false"
+				var annotationFlag bool
+				annotationFlag, err = strconv.ParseBool(app.ObjectMeta.GetAnnotations()[chaosAnnotation])
+				//log.Info("Annotaion Flag", "aflag", annotationFlag)
+				if err != nil {
+					// Unable to check the annotation
+					// Would not add in the chaosCandidates
+					log.Info("Unable to check the annotationFlag", "annotationFlag", annotationFlag)
+				} else {
+					if annotationFlag {
+						// If annotationFlag is true
+						// Add it to the Chaos Candidates, and log the details
+						log.Info("chaos candidate : ", "appName", appName, "appUUID", appUUID)
+						chaosCandidates++
+					}
+				}
 			}
 		}
 		if chaosCandidates == 0 {
-			//logrus.Info("No chaos candidates found")
 			log.Info("No chaos candidates found")
 			return reconcile.Result{}, nil
+
 		} else if chaosCandidates > 1 {
-			//logrus.Info ("Too many chaos candidates with same label",
 			log.Info("Too many chaos candidates with same label, either provide unique labels or annotate only desired app for chaos")
 			return reconcile.Result{}, nil
 		}
 	} else {
-		//logrus.Info("No app deployments with matching labels")
 		log.Info("No app deployments with matching labels")
 		return reconcile.Result{}, nil
 	}
@@ -245,43 +239,18 @@ func (r *ReconcileChaosEngine) Reconcile(request reconcile.Request) (reconcile.R
 	}
 
 	// Check if the engineRunner pod already exists, else create
-	foundS1 := &corev1.Pod{} //secondary resource #1
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: engineRunner.Name, Namespace: engineRunner.Namespace}, foundS1)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new engineRunner Pod", "Pod.Namespace", engineRunner.Namespace, "Pod.Name", engineRunner.Name)
-		err = r.client.Create(context.TODO(), engineRunner)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-		// Pod created successfully - don't requeue
-		reqLogger.Info("engineRunner Pod created successfully")
-	} else if err != nil {
+	err = engineRunnerPod(engineRunner, r, reqLogger, &corev1.Pod{})
+	if err != nil {
 		return reconcile.Result{}, err
 	}
-
-	// Pod already exists - don't requeue
-	reqLogger.Info("Skip reconcile: engineRunner Pod already exists", "Pod.Namespace", foundS1.Namespace, "Pod.Name", foundS1.Name)
 
 	// Check if the engineMonitorservice already exists, else create
-	foundS2 := &corev1.Service{} //secondary resource #2
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: engineMonitor.Name, Namespace: engineMonitor.Namespace}, foundS2)
-	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new engineMonitor Service", "Service.Namespace", engineMonitor.Namespace, "Service.Name", engineMonitor.Name)
-		err = r.client.Create(context.TODO(), engineMonitor)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-
-		// Service created successfully - don't requeue
-		return reconcile.Result{}, nil /*You can return now, both sec resources are created */
-	} else if err != nil {
+	err = engineMonitorservice(engineMonitor, r, reqLogger, &corev1.Service{})
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
-	// Service already exists - don't requeue
-	reqLogger.Info("Skip reconcile: engineMonitor Service already exists", "Service.Namespace", foundS2.Namespace, "Service.Name", foundS2.Name)
-	return reconcile.Result{}, nil /*You can return now, both sec resources are existing */
+	return reconcile.Result{}, nil
 }
 
 // getChaosRunnerENV return the env required for chaos-runner
@@ -302,6 +271,10 @@ func getChaosRunnerENV(cr *litmuschaosv1alpha1.ChaosEngine, aExList []string) []
 		{
 			Name:  "EXPERIMENT_LIST",
 			Value: fmt.Sprint(strings.Join(aExList, ",")),
+		},
+		{
+			Name:  "CHAOS_SVC_ACC",
+			Value: cr.Spec.ChaosServiceAccount,
 		},
 	}
 }
@@ -332,6 +305,9 @@ func getMonitoringENV() []corev1.ServicePort {
 
 // newRunnerPodForCR defines secondary resource #1 in same namespace as CR */
 func newRunnerPodForCR(cr *litmuschaosv1alpha1.ChaosEngine, aUUID types.UID, aExList []string) (*corev1.Pod, error) {
+	if len(aExList) == 0 || aUUID == "" {
+		return nil, errors.New("expected aExList not found")
+	}
 	labels := map[string]string{
 		"app": cr.Name,
 	}
@@ -339,11 +315,11 @@ func newRunnerPodForCR(cr *litmuschaosv1alpha1.ChaosEngine, aUUID types.UID, aEx
 		WithName(cr.Name + "-runner").
 		WithNamespace(cr.Namespace).
 		WithLabels(labels).
-		WithServiceAccountName("chaos-operator").
+		WithServiceAccountName(cr.Spec.ChaosServiceAccount).
 		WithContainerBuilder(
 			container.NewBuilder().
 				WithName("chaos-runner").
-				WithImage("ksatchit/ansible-runner:trial8").
+				WithImage("ksatchit/ansible-runner:trial7").
 				WithCommandNew([]string{"/bin/bash"}).
 				WithArgumentsNew([]string{"-c", "ansible-playbook ./executor/test.yml -i /etc/ansible/hosts -vv; exit 0"}).
 				WithEnvsNew(getChaosRunnerENV(cr, aExList)),
@@ -363,6 +339,9 @@ func newRunnerPodForCR(cr *litmuschaosv1alpha1.ChaosEngine, aUUID types.UID, aEx
 
 // newMonitorServiceForCR defines secondary resource #2 in same namespace as CR */
 func newMonitorServiceForCR(cr *litmuschaosv1alpha1.ChaosEngine) (*corev1.Service, error) {
+	if cr == nil {
+		return nil, errors.New("nil chaosengine object")
+	}
 	labels := map[string]string{
 		"app": cr.Name,
 	}
@@ -380,4 +359,54 @@ func newMonitorServiceForCR(cr *litmuschaosv1alpha1.ChaosEngine) (*corev1.Servic
 		return nil, err
 	}
 	return serviceObj, nil
+}
+
+// initializeApplicationInfo to initialize application info
+func (appInfo *applicationInfo) initializeApplicationInfo(instance *litmuschaosv1alpha1.ChaosEngine) *applicationInfo {
+	appLabel := strings.Split(instance.Spec.Appinfo.Applabel, "=")
+	appLabelKey = appLabel[0]
+	appLabelValue = appLabel[1]
+	appInfo.label = make(map[string]string)
+	appInfo.label[appLabelKey] = appLabelValue
+	appInfo.namespace = instance.Spec.Appinfo.Appns
+	appInfo.experimentList = instance.Spec.Experiments
+	appInfo.serviceAccountName = instance.Spec.ChaosServiceAccount
+	return appInfo
+}
+
+// engineRunnerPod to Check if the engineRunner pod already exists, else create
+func engineRunnerPod(engineRunner *v1.Pod, r *ReconcileChaosEngine, reqLogger logr.Logger, pod *v1.Pod) error {
+	err := r.client.Get(context.TODO(), types.NamespacedName{Name: engineRunner.Name, Namespace: engineRunner.Namespace}, pod)
+	if err != nil && k8serrors.IsNotFound(err) {
+		reqLogger.Info("Creating a new engineRunner Pod", "Pod.Namespace", engineRunner.Namespace, "Pod.Name", engineRunner.Name)
+		err = r.client.Create(context.TODO(), engineRunner)
+		if err != nil {
+			return err
+		}
+
+		// Pod created successfully - don't requeue
+		reqLogger.Info("engineRunner Pod created successfully")
+	} else if err != nil {
+		return err
+	}
+	reqLogger.Info("Skip reconcile: engineRunner Pod already exists", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
+	return nil
+}
+
+// Check if the engineMonitorservice already exists, else create
+func engineMonitorservice(engineMonitor *v1.Service, r *ReconcileChaosEngine, reqLogger logr.Logger, service *v1.Service) error {
+	err := r.client.Get(context.TODO(), types.NamespacedName{Name: engineMonitor.Name, Namespace: engineMonitor.Namespace}, service)
+	if err != nil && k8serrors.IsNotFound(err) {
+		reqLogger.Info("Creating a new engineMonitor Service", "Service.Namespace", engineMonitor.Namespace, "Service.Name", engineMonitor.Name)
+		err = r.client.Create(context.TODO(), engineMonitor)
+		if err != nil {
+			return err
+		}
+
+		// Service created successfully - don't requeue
+	} else if err != nil {
+		return err
+	}
+	reqLogger.Info("Skip reconcile: engineMonitor Service already exists", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+	return nil /*You can return now, both sec resources are existing */
 }
